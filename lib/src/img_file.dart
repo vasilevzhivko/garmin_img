@@ -8,10 +8,11 @@ import 'model/tre.dart';
 
 /// Entry point: parses a Garmin `.img` file into its sub-maps.
 ///
-/// Milestone scope (validated end-to-end against a real NT/GMP topo): decodes
-/// the IMG container + GMP sub-maps, the TRE header (bounds, map levels,
-/// subdivisions) and the FIRST point of each polyline. The full RGN bitstream
-/// (all points), labels, and extended types are the next step.
+/// Decodes (validated end-to-end against a real NT/GMP topo): the IMG container
+/// + GMP sub-maps, the TRE header (bounds, map levels, subdivisions), and the
+/// full RGN basic-object data — every point of each polyline/polygon, points,
+/// and labels (contour elevations, POI names). Extended-type objects are a
+/// follow-up (this sample stores its contours as basic objects).
 ///
 /// Only UNLOCKED images (XOR byte 0x00, "GARMIN" markers in the clear) are
 /// supported — encrypted Garmin maps are out of scope.
@@ -347,7 +348,12 @@ class ImgMap {
       blen = _img._src.u8(p + 8);
       bs = p + 9;
     }
-    if (blen < 1 || bs + blen > _img._src.length) return null;
+    // The length byte counts the bitstream DATA bytes only — the leading info
+    // byte is separate — so the bitstream spans blen+1 bytes total and the next
+    // object begins at bs + blen + 1. (Getting this off by one desyncs every
+    // object after the first.)
+    final total = blen + 1;
+    if (blen < 1 || bs + total > _img._src.length) return null;
 
     // Sanity terminator: a real polyline's first point sits within this
     // subdivision's box. The width/height are half-extents at this level's
@@ -358,11 +364,11 @@ class ImgMap {
     if (dLon.abs() > limitLon || dLat.abs() > limitLat) return null;
 
     // Read the whole (small) bitstream once — one file read for the file source.
-    final stream = _img._src.range(bs, blen);
+    final stream = _img._src.range(bs, total);
     final info = stream[0];
     final lonBase = _baseBits(info & 0x0f);
     final latBase = _baseBits((info >> 4) & 0x0f);
-    final br = BitReader(stream, 1, blen - 1);
+    final br = BitReader(stream, 1, blen);
 
     var lonVar = false, latVar = false, lonSign = 1, latSign = 1;
     if (br.get(1) != 0) {
@@ -390,7 +396,7 @@ class ImgMap {
 
     final feature = ImgFeature(
         kind: kind, type: type & 0x3f, points: pts, label: _label(_img._u24(p + 1)));
-    return (feature: feature, next: bs + blen);
+    return (feature: feature, next: bs + total);
   }
 
   static int _baseBits(int nibble) => nibble <= 9 ? nibble : 2 * nibble - 9;

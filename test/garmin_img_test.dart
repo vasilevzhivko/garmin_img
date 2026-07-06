@@ -142,9 +142,15 @@ void main() {
       final hLat = (b.north - b.south) / 12, hLng = (b.east - b.west) / 12;
       final q = BoundingBox(cLat - hLat, cLng - hLng, cLat + hLat, cLng + hLng);
 
-      final windowed = map.featuresInBounds(q).take(3000).toList();
+      // Restrict to the finest level: its subdivisions are small, so a
+      // subdivision that overlaps the window keeps its features genuinely near
+      // it. (Coarse levels have huge subdivisions whose features spread across
+      // the whole map, so "near the box" is only a meaningful invariant here.)
+      final fineBpc =
+          (map.levels.map((l) => l.bitsPerCoord).toSet().toList()..sort()).last;
+      final windowed =
+          map.featuresInBounds(q, onlyBpc: {fineBpc}).take(3000).toList();
       expect(windowed, isNotEmpty);
-      // Features should be near the window (their subdivision overlapped it).
       var near = 0;
       for (final f in windowed) {
         if (f.points.any((p) =>
@@ -156,7 +162,35 @@ void main() {
         }
       }
       expect(near, greaterThan(windowed.length ~/ 2),
-          reason: 'most windowed features should sit in/near the query box');
+          reason: 'most windowed fine-level features should sit in/near the query box');
+    });
+
+    test('decodes many objects per subdivision (stride off-by-one regression)',
+        () async {
+      // The RGN object length byte counts DATA bytes only (info byte separate),
+      // so the next object begins at bs + blen + 1. An off-by-one there desyncs
+      // after the FIRST object of every subdivision, collapsing the finest level
+      // to ~1 object each (~95% data loss). Assert a small central window of the
+      // densest map's finest level yields many features — impossible if the
+      // per-subdivision decode stops after one object.
+      final img = await GarminImg.open(sample!);
+      // Max central-window fine-level count across all maps — at least one map
+      // has data at its centre; the count there must be far above 1/subdivision.
+      var best = 0;
+      for (final map in img.maps) {
+        if (map.levels.isEmpty) continue;
+        final bb = map.bounds;
+        final cLat = (bb.south + bb.north) / 2, cLng = (bb.west + bb.east) / 2;
+        const h = 0.01;
+        final q = BoundingBox(cLat - h, cLng - h, cLat + h, cLng + h);
+        final fineBpc = (map.levels.map((l) => l.bitsPerCoord).toSet().toList()
+              ..sort())
+            .last;
+        final n = map.featuresInBounds(q, onlyBpc: {fineBpc}).take(2000).length;
+        if (n > best) best = n;
+      }
+      expect(best, greaterThan(50),
+          reason: 'off-by-one would cap this at ~1 object per subdivision');
     });
   }, skip: sample == null ? 'no sample .img (set GARMIN_IMG_SAMPLE)' : false);
 

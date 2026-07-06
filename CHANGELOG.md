@@ -1,3 +1,11 @@
+## 0.0.7
+
+- Fix a critical RGN object-stride off-by-one: the polyline/polygon length byte
+  counts bitstream DATA bytes only (the leading info byte is separate), so the
+  next object starts at `bs + blen + 1`. The old code stopped after the first
+  object of every subdivision, discarding ~95% of all line/polygon geometry.
+  Contour/area counts now increase ~20x. Adds a regression test.
+
 ## 0.0.1
 
 - Initial skeleton: IMG container + GMP sub-maps, TRE (bounds, map levels,
