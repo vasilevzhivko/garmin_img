@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'bit_reader.dart';
 import 'model/feature.dart';
 import 'model/geo.dart';
 import 'model/tre.dart';
@@ -75,7 +76,6 @@ class GarminImg {
     final tre1 = gmp + _u32(tre + 0x21);
     final tre1Size = _u32(tre + 0x25);
     final tre2 = gmp + _u32(tre + 0x29);
-    final tre2Size = _u32(tre + 0x2D);
 
     // TRE1: map levels, 4 bytes each [zoom|inherited, bpc, subdivCount(2)].
     final levels = <MapLevel>[];
@@ -84,21 +84,28 @@ class GarminImg {
       levels.add(MapLevel(_b[o] & 0x0f, _b[o + 1], _u16(o + 2)));
     }
 
-    // TRE2: subdivisions, 16 bytes each (last map level uses 14, but the extra 2
-    // "next level" bytes are simply ignored here).
+    // TRE2: subdivisions. Every map level uses 16-byte records EXCEPT the last
+    // (finest) level, which uses 14 bytes. Walk level-by-level so each
+    // subdivision carries the correct bits-per-coord and we use the right stride.
     final subs = <Subdivision>[];
-    for (var i = 0; i < tre2Size ~/ 16; i++) {
-      final o = tre2 + i * 16;
-      final w = _u16(o + 10);
-      subs.add(Subdivision(
-        rgnOffset: _u24(o),
-        elementFlags: _b[o + 3],
-        centerLon: _s24(o + 4),
-        centerLat: _s24(o + 7),
-        width: w & 0x7fff,
-        height: _u16(o + 12),
-        isLast: (w & 0x8000) != 0,
-      ));
+    var o = tre2;
+    for (var li = 0; li < levels.length; li++) {
+      final level = levels[li];
+      final stride = (li == levels.length - 1) ? 14 : 16;
+      for (var k = 0; k < level.subdivisionCount; k++) {
+        final w = _u16(o + 10);
+        subs.add(Subdivision(
+          rgnOffset: _u24(o),
+          elementFlags: _b[o + 3],
+          centerLon: _s24(o + 4),
+          centerLat: _s24(o + 7),
+          width: w & 0x7fff,
+          height: _u16(o + 12),
+          isLast: (w & 0x8000) != 0,
+          bitsPerCoord: level.bitsPerCoord,
+        ));
+        o += stride;
+      }
     }
 
     final rgnData0 = gmp + _u32(rgn + 0x15); // start of first subdivision data
@@ -147,37 +154,138 @@ class ImgMap {
   ImgMap._(this._img, this.bounds, this.levels, this.subdivisions,
       this._rgnData0, this._lbl);
 
-  /// Decodes the FIRST point of each polyline in every subdivision (the point
-  /// stored explicitly before the bitstream). Validated to land in-bounds; the
-  /// full bitstream (remaining points) is the next milestone.
-  Iterable<ImgFeature> firstPoints() sync* {
+  /// Sorted unique RGN offsets — used to bound a subdivision's data (its data
+  /// ends where the next subdivision's begins).
+  late final List<int> _sortedOffsets =
+      (subdivisions.map((s) => s.rgnOffset).toSet().toList()..sort());
+
+  /// Absolute end of the RGN data owned by the subdivision at [rgnOffset]
+  /// (= the next larger offset, or the end of the buffer).
+  int _dataEnd(int rgnOffset) {
+    var lo = 0, hi = _sortedOffsets.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      if (_sortedOffsets[mid] <= rgnOffset) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo < _sortedOffsets.length
+        ? _rgnData0 + _sortedOffsets[lo]
+        : _img._b.length;
+  }
+
+  /// Decodes every polyline (all points) across all subdivisions. Contour lines
+  /// (types 0x20–0x25 on topo maps) come through here. Labels/elevations and
+  /// extended types (0x10000+) are not resolved yet.
+  Iterable<ImgFeature> polylines() sync* {
     for (final sd in subdivisions) {
       if (!sd.hasPolylines) continue;
-      final base = _rgnData0 + sd.rgnOffset;
-      // Element chunks are ordered points, polylines, polygons. Pointers (2 bytes
-      // each) precede the first chunk — one per present type beyond the first.
-      final present = [sd.hasPoints, sd.hasIndexedPoints, sd.hasPolylines, sd.hasPolygons];
-      final order = present.asMap().entries.where((e) => e.value).map((e) => e.key).toList();
-      if (order.isEmpty) continue;
-      int poly;
-      if (order.first == 2) {
-        poly = base + (order.length - 1) * 2; // polylines are first chunk
-      } else if (order.contains(2)) {
-        final ptrIndex = order.indexOf(2) - 1; // pointer to the polyline chunk
-        poly = base + _img._u16(base + ptrIndex * 2);
-      } else {
-        continue;
+      final chunk = _chunkStart(sd, wantType: 2); // 2 = polylines
+      if (chunk == null) continue;
+      // A subdivision's polyline chunk is a run of polyline objects. We decode
+      // sequentially; the chunk ends at the next chunk / subdivision (bounded
+      // here by the object's own length fields).
+      var p = chunk.start;
+      final end = chunk.end;
+      var guard = 0;
+      while (p + 9 <= end && guard++ < 20000) {
+        final decoded = _decodePolyline(p, sd);
+        // Stop the chunk as soon as an object doesn't look like a valid polyline
+        // belonging to this subdivision — a robust terminator that keeps us from
+        // spilling past the real polylines into adjacent data.
+        if (decoded == null) break;
+        yield decoded.feature;
+        p = decoded.next;
       }
-      final type = _img._b[poly];
-      final dLon = _img._d.getInt16(poly + 4, Endian.little);
-      final dLat = _img._d.getInt16(poly + 6, Endian.little);
-      final lon = garminUnitsToDegrees(sd.centerLon + dLon);
-      final lat = garminUnitsToDegrees(sd.centerLat + dLat);
-      yield ImgFeature(
-        kind: FeatureKind.polyline,
-        type: type & 0x3f,
-        points: [LatLng(lat, lon)],
-      );
     }
+  }
+
+  /// Locates the RGN chunk of [wantType] (0=points,1=indexed,2=polylines,
+  /// 3=polygons) for [sd], returning its [start] and a conservative [end].
+  ({int start, int end})? _chunkStart(Subdivision sd, {required int wantType}) {
+    final base = _rgnData0 + sd.rgnOffset;
+    final present = <int>[];
+    for (final (i, flag) in [sd.hasPoints, sd.hasIndexedPoints, sd.hasPolylines, sd.hasPolygons].indexed) {
+      if (flag) present.add(i);
+    }
+    if (present.isEmpty || !present.contains(wantType)) return null;
+    final headerLen = (present.length - 1) * 2; // 2-byte pointer per chunk after the first
+    final idx = present.indexOf(wantType);
+    final start = idx == 0 ? base + headerLen : base + _img._u16(base + (idx - 1) * 2);
+    // End = start of the next chunk if any, else this subdivision's data end.
+    final end = idx + 1 < present.length
+        ? base + _img._u16(base + idx * 2)
+        : _dataEnd(sd.rgnOffset);
+    return (start: start, end: end);
+  }
+
+  ({ImgFeature feature, int next})? _decodePolyline(int p, Subdivision sd) {
+    if (p + 9 > _img._b.length) return null;
+    final type = _img._b[p];
+    final twoByteLen = (type & 0x80) != 0;
+    final dLon = _img._d.getInt16(p + 4, Endian.little);
+    final dLat = _img._d.getInt16(p + 6, Endian.little);
+    final int blen;
+    final int bs;
+    if (twoByteLen) {
+      blen = _img._u16(p + 8);
+      bs = p + 10;
+    } else {
+      blen = _img._b[p + 8];
+      bs = p + 9;
+    }
+    if (blen < 1 || bs + blen > _img._b.length) return null;
+
+    // Sanity terminator: a real polyline's first point sits within this
+    // subdivision's box. The width/height are half-extents at this level's
+    // resolution; allow generous slack. A wildly larger delta means we've run
+    // off the end of the polyline chunk into unrelated bytes.
+    final limitLon = (sd.width == 0 ? 0x2000 : sd.width) * 6 + 64;
+    final limitLat = (sd.height == 0 ? 0x2000 : sd.height) * 6 + 64;
+    if (dLon.abs() > limitLon || dLat.abs() > limitLat) return null;
+
+    final info = _img._b[bs];
+    final lonBase = _baseBits(info & 0x0f);
+    final latBase = _baseBits((info >> 4) & 0x0f);
+    final br = BitReader(_img._b, bs + 1, blen - 1);
+
+    var lonVar = false, latVar = false, lonSign = 1, latSign = 1;
+    if (br.get(1) != 0) {
+      lonSign = br.get(1) != 0 ? -1 : 1;
+    } else {
+      lonVar = true;
+    }
+    if (br.get(1) != 0) {
+      latSign = br.get(1) != 0 ? -1 : 1;
+    } else {
+      latVar = true;
+    }
+    final lonBits = 2 + lonBase + (lonVar ? 1 : 0);
+    final latBits = 2 + latBase + (latVar ? 1 : 0);
+    final shift = 24 - sd.bitsPerCoord;
+
+    var x = sd.centerLon + (dLon << shift);
+    var y = sd.centerLat + (dLat << shift);
+    final pts = <LatLng>[LatLng(garminUnitsToDegrees(y), garminUnitsToDegrees(x))];
+    while (br.remaining >= lonBits + latBits) {
+      x += _signed(br, lonBits, lonVar, lonSign) << shift;
+      y += _signed(br, latBits, latVar, latSign) << shift;
+      pts.add(LatLng(garminUnitsToDegrees(y), garminUnitsToDegrees(x)));
+    }
+
+    final feature = ImgFeature(kind: FeatureKind.polyline, type: type & 0x3f, points: pts);
+    return (feature: feature, next: bs + blen);
+  }
+
+  static int _baseBits(int nibble) => nibble <= 9 ? nibble : 2 * nibble - 9;
+
+  static int _signed(BitReader br, int bits, bool variable, int sign) {
+    final v = br.get(bits);
+    if (variable) {
+      return (v & (1 << (bits - 1))) != 0 ? v - (1 << bits) : v;
+    }
+    return v * sign;
   }
 }

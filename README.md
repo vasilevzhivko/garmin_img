@@ -17,11 +17,13 @@ polyline first-points all decode correctly and in-bounds.
 Implemented:
 - IMG container + GMP sub-map location
 - TRE: bounding box, map levels (bits-per-coord), subdivisions
-- RGN: first point of each polyline
+- RGN: **full polyline geometry (all vertices)** via the bit-packed bitstream —
+  topo contour lines (types 0x20–0x25) come through
+- `example/img2geojson.dart` — dump polylines to GeoJSON (viewable in geojson.io)
 
 Next:
-- Full RGN bitstream (all points of polylines/polygons), points/POIs
-- Extended types (0x10000+, incl. topo contour lines) and LBL labels/elevations
+- Polygons + points/POIs (same bitstream); extended types (0x10000+)
+- LBL labels & contour elevations
 - FAT-based subfile enumeration; streaming reads for large files (mobile)
 
 ## Usage
@@ -33,7 +35,7 @@ final img = await GarminImg.open('gmapsupp.img');
 for (final map in img.maps) {
   print(map.bounds);                 // BBox(S=… W=… N=… E=…)
   print(map.levels);                 // [MapLevel(zoom bpc n)…]
-  for (final f in map.firstPoints()) // decoded polyline start points
+  for (final f in map.polylines()) // decoded polyline start points
     print(f);
 }
 ```

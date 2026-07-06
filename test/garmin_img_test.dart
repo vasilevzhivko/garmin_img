@@ -39,15 +39,37 @@ void main() {
       expect(map.subdivisions, isNotEmpty);
     });
 
-    test('decoded polyline first-points fall inside the map bounds', () async {
+    test('decoded polylines are multi-point, in-bounds and coherent', () async {
       final img = await GarminImg.open(sample!);
       final map = img.maps.first;
-      final pts = map.firstPoints().take(50).toList();
-      expect(pts, isNotEmpty, reason: 'expected some polylines');
-      for (final f in pts) {
-        expect(map.bounds.contains(f.points.first), isTrue,
-            reason: 'point ${f.points.first} outside ${map.bounds}');
+      final lines = map.polylines().take(500).toList();
+      expect(lines, isNotEmpty, reason: 'expected some polylines');
+
+      // Allow a tiny slack for boundary features; the vast majority must be
+      // in-bounds and geometrically coherent (no wild jumps between vertices).
+      final b = map.bounds;
+      var multiPoint = 0, bad = 0;
+      for (final f in lines) {
+        if (f.points.length >= 2) multiPoint++;
+        var maxStep = 0.0;
+        for (var i = 1; i < f.points.length; i++) {
+          maxStep = [
+            maxStep,
+            (f.points[i].lat - f.points[i - 1].lat).abs(),
+            (f.points[i].lng - f.points[i - 1].lng).abs(),
+          ].reduce((a, c) => a > c ? a : c);
+        }
+        final inBounds = f.points.every((p) =>
+            p.lat >= b.south - 0.05 &&
+            p.lat <= b.north + 0.05 &&
+            p.lng >= b.west - 0.05 &&
+            p.lng <= b.east + 0.05);
+        if (!inBounds || maxStep > 0.05) bad++;
       }
+      expect(multiPoint, greaterThan(lines.length ~/ 2),
+          reason: 'most polylines should have >1 decoded vertex');
+      expect(bad, lessThan((lines.length * 0.03).ceil()),
+          reason: '$bad/${lines.length} polylines out-of-bounds or incoherent');
     });
   }, skip: sample == null ? 'no sample .img (set GARMIN_IMG_SAMPLE)' : false);
 

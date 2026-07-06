@@ -24,6 +24,10 @@ class Subdivision {
   final int height;
   final bool isLast;
 
+  /// Bits-per-coordinate of the map level this subdivision belongs to; sets how
+  /// far coordinate deltas are left-shifted to reach 24-bit Garmin units.
+  final int bitsPerCoord;
+
   const Subdivision({
     required this.rgnOffset,
     required this.elementFlags,
@@ -32,6 +36,7 @@ class Subdivision {
     required this.width,
     required this.height,
     required this.isLast,
+    required this.bitsPerCoord,
   });
 
   bool get hasPoints => elementFlags & 0x10 != 0;

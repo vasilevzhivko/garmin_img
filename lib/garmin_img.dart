@@ -4,7 +4,7 @@
 /// final img = await GarminImg.open('gmapsupp.img');
 /// for (final map in img.maps) {
 ///   print(map.bounds);
-///   for (final f in map.firstPoints()) print(f);
+///   for (final f in map.polylines()) print(f);
 /// }
 /// ```
 library;
