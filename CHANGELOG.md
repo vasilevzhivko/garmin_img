@@ -1,3 +1,10 @@
+## 0.0.8
+
+- Add `GarminImg.polygonColors`: authentic per-type polygon fill colors parsed
+  from the map's embedded `GARMIN TYP` style subfile (header layout validated
+  against Locus' TypFileHandler; polygon index at header+0x47). Background
+  ("definition area", pure black) types are omitted so they aren't filled.
+
 ## 0.0.7
 
 - Fix a critical RGN object-stride off-by-one: the polyline/polygon length byte

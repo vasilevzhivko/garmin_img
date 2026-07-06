@@ -165,6 +165,18 @@ void main() {
           reason: 'most windowed fine-level features should sit in/near the query box');
     });
 
+    test('reads polygon colors from the embedded TYP style table', () async {
+      final img = await GarminImg.open(sample!);
+      final colors = img.polygonColors;
+      expect(colors, isNotEmpty,
+          reason: 'sample has a GARMIN TYP subfile with polygon styles');
+      // Every value is opaque 0xFFRRGGBB and non-black (black = background, skipped).
+      for (final v in colors.values) {
+        expect(v >> 24 & 0xFF, 0xFF);
+        expect(v & 0xFFFFFF, isNot(0));
+      }
+    });
+
     test('decodes many objects per subdivision (stride off-by-one regression)',
         () async {
       // The RGN object length byte counts DATA bytes only (info byte separate),

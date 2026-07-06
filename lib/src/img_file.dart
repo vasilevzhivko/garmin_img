@@ -47,6 +47,53 @@ class GarminImg {
   /// scanning for "GARMIN GMP" markers; a proper FAT walk is a follow-up.
   late final List<ImgMap> maps = _scanMaps();
 
+  /// Authentic polygon fill colors from the map's embedded **TYP** style
+  /// subfile, keyed by polygon type code → 0xFFRRGGBB (opaque, day colors).
+  /// Empty when the map has no TYP or it can't be parsed. Types defined as a
+  /// pure-black "background/definition" area are omitted (they should not be
+  /// filled). Consumers typically lighten these for a calmer look.
+  late final Map<int, int> polygonColors = _parseTypPolygons();
+
+  /// Parses the polygon section of the (single) `GARMIN TYP` subfile. Layout
+  /// (validated against Locus' `TypFileHandler` header + empirically):
+  ///   +0x15 u16 codepage
+  ///   +0x27 u32 polygon-data offset, +0x2b u32 length   (TYP-relative)
+  ///   +0x47 u32 polygon-index offset, +0x4b u8 record size, +0x4d u32 length
+  /// Index record = u16 typecode + (recSize-2)-byte data offset; polygon
+  /// type = typecode >> 5. Data entry = flag(1) + day BGR(3) [+ night/bitmap].
+  Map<int, int> _parseTypPolygons() {
+    try {
+      final at = _src.indexOf(_ascii('GARMIN TYP'), 0);
+      if (at < 2) return const {};
+      final typ = at - 2;
+      final dataOff = typ + _u32(typ + 0x27);
+      final idxOff = typ + _u32(typ + 0x47);
+      final rec = _src.u8(typ + 0x4b);
+      final idxLen = _u32(typ + 0x4d);
+      if (rec < 3 || idxLen <= 0 || idxLen > 1 << 20) return const {};
+      final out = <int, int>{};
+      final n = idxLen ~/ rec;
+      for (var k = 0; k < n; k++) {
+        final r = idxOff + k * rec;
+        final typecode = _u16(r);
+        var off = 0;
+        for (var b = 0; b < rec - 2; b++) {
+          off |= _src.u8(r + 2 + b) << (8 * b);
+        }
+        final type = typecode >> 5;
+        final e = dataOff + off;
+        if (e + 4 > _src.length) continue;
+        // day color = BGR at entry+1
+        final bl = _src.u8(e + 1), gr = _src.u8(e + 2), rd = _src.u8(e + 3);
+        if (rd == 0 && gr == 0 && bl == 0) continue; // background — don't fill
+        out[type] = 0xFF000000 | (rd << 16) | (gr << 8) | bl;
+      }
+      return out;
+    } catch (_) {
+      return const {};
+    }
+  }
+
   List<ImgMap> _scanMaps() {
     final result = <ImgMap>[];
     final needle = _ascii('GARMIN GMP');
