@@ -24,7 +24,7 @@ Implemented:
 
 Next:
 - Extended types (0x10000+); non-Latin label codepages (Cyrillic)
-- FAT-based subfile enumeration; streaming reads for large files (mobile)
+- FAT-based subfile enumeration (streaming reads already done ✅)
 
 ## Usage
 

@@ -20,3 +20,10 @@
 
 - LBL labels: POI/feature names and contour elevation labels. Supports 8-bit
   (coding 9) and 6-bit (coding 6) label encodings. Features now carry `label`.
+
+## 0.0.5
+
+- Streaming reads: ByteSource abstraction with a file-backed, block-cached
+  source (FileByteSource) so large maps are not loaded into RAM. GarminImg.open
+  now streams; GarminImg.fromBytes stays in-memory. maps are scanned once/cached.
+  Added close(). All decode tests pass via the streaming path.
