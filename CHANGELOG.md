@@ -27,3 +27,9 @@
   source (FileByteSource) so large maps are not loaded into RAM. GarminImg.open
   now streams; GarminImg.fromBytes stays in-memory. maps are scanned once/cached.
   Added close(). All decode tests pass via the streaming path.
+
+## 0.0.6
+
+- featuresInBounds(query, {onlyBpc}): decode only subdivisions overlapping a
+  viewport (optionally a single map level), for fast on-device rendering.
+  Per-subdivision decoders; subdivision bbox from center + width/height.

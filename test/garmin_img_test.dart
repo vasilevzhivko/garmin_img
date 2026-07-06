@@ -132,6 +132,32 @@ void main() {
       expect(elevs.map((f) => f.label!).any((s) => RegExp(r'^\d+$').hasMatch(s.trim())),
           isTrue, reason: 'expected a numeric contour elevation');
     });
+
+    test('featuresInBounds returns far fewer features, near the query box', () async {
+      final img = await GarminImg.open(sample!);
+      final map = img.maps.first;
+      final b = map.bounds;
+      // A small central window (~1/6 of the map each way).
+      final cLat = (b.south + b.north) / 2, cLng = (b.west + b.east) / 2;
+      final hLat = (b.north - b.south) / 12, hLng = (b.east - b.west) / 12;
+      final q = BoundingBox(cLat - hLat, cLng - hLng, cLat + hLat, cLng + hLng);
+
+      final windowed = map.featuresInBounds(q).take(3000).toList();
+      expect(windowed, isNotEmpty);
+      // Features should be near the window (their subdivision overlapped it).
+      var near = 0;
+      for (final f in windowed) {
+        if (f.points.any((p) =>
+            p.lat >= q.south - 0.05 &&
+            p.lat <= q.north + 0.05 &&
+            p.lng >= q.west - 0.05 &&
+            p.lng <= q.east + 0.05)) {
+          near++;
+        }
+      }
+      expect(near, greaterThan(windowed.length ~/ 2),
+          reason: 'most windowed features should sit in/near the query box');
+    });
   }, skip: sample == null ? 'no sample .img (set GARMIN_IMG_SAMPLE)' : false);
 
   test('rejects a locked (non-zero XOR) image', () {

@@ -204,55 +204,88 @@ class ImgMap {
 
   /// Every polyline (all vertices) across all subdivisions. Contour lines
   /// (types 0x20–0x25 on topo maps) come through here.
-  Iterable<ImgFeature> polylines() => _lines(2, FeatureKind.polyline);
+  Iterable<ImgFeature> polylines() =>
+      _forEachSub((sd) => _linesOf(sd, 2, FeatureKind.polyline));
 
-  /// Every polygon (area fills: water, forest, land) — same bitstream encoding
-  /// as polylines.
-  Iterable<ImgFeature> polygons() => _lines(3, FeatureKind.polygon);
+  /// Every polygon (area fills: water, forest, land) — same bitstream encoding.
+  Iterable<ImgFeature> polygons() =>
+      _forEachSub((sd) => _linesOf(sd, 3, FeatureKind.polygon));
 
   /// Every point / POI (peaks, springs, etc.) — single-coordinate features.
-  Iterable<ImgFeature> points() sync* {
+  Iterable<ImgFeature> points() => _forEachSub(_pointsOf);
+
+  /// All decoded features (points, polylines, polygons).
+  Iterable<ImgFeature> features() => _forEachSub(_featuresOf);
+
+  /// Features whose subdivision overlaps [query]. Optionally restrict to map
+  /// levels with the given bits-per-coord ([onlyBpc]) — pick these by zoom so a
+  /// viewport only decodes the appropriate level of detail (fast on mobile).
+  Iterable<ImgFeature> featuresInBounds(BoundingBox query, {Set<int>? onlyBpc}) sync* {
     for (final sd in subdivisions) {
-      // chunk index 0 = plain points, 1 = "indexed" points (city refs); both
-      // share the point object layout.
-      for (final wantType in const [0, 1]) {
-        final chunk = _chunkStart(sd, wantType: wantType);
-        if (chunk == null) continue;
-        var p = chunk.start;
-        var guard = 0;
-        while (p + 8 <= chunk.end && guard++ < 20000) {
-          final decoded = _decodePoint(p, sd);
-          if (decoded == null) break;
-          yield decoded.feature;
-          p = decoded.next;
-        }
-      }
+      if (onlyBpc != null && !onlyBpc.contains(sd.bitsPerCoord)) continue;
+      if (!_overlaps(_subBounds(sd), query)) continue;
+      yield* _featuresOf(sd);
     }
   }
 
-  /// All decoded features (points, polylines, polygons).
-  Iterable<ImgFeature> features() sync* {
-    yield* points();
-    yield* polylines();
-    yield* polygons();
+  Iterable<ImgFeature> _forEachSub(
+      Iterable<ImgFeature> Function(Subdivision) decode) sync* {
+    for (final sd in subdivisions) {
+      yield* decode(sd);
+    }
   }
 
-  Iterable<ImgFeature> _lines(int wantType, FeatureKind kind) sync* {
-    for (final sd in subdivisions) {
+  Iterable<ImgFeature> _featuresOf(Subdivision sd) sync* {
+    yield* _pointsOf(sd);
+    yield* _linesOf(sd, 2, FeatureKind.polyline);
+    yield* _linesOf(sd, 3, FeatureKind.polygon);
+  }
+
+  Iterable<ImgFeature> _linesOf(Subdivision sd, int wantType, FeatureKind kind) sync* {
+    final chunk = _chunkStart(sd, wantType: wantType);
+    if (chunk == null) return;
+    var p = chunk.start;
+    var guard = 0;
+    while (p + 9 <= chunk.end && guard++ < 20000) {
+      // Stop the chunk as soon as an object doesn't look valid for this
+      // subdivision — keeps us from spilling into adjacent data.
+      final decoded = _decodeLine(p, sd, kind);
+      if (decoded == null) break;
+      yield decoded.feature;
+      p = decoded.next;
+    }
+  }
+
+  Iterable<ImgFeature> _pointsOf(Subdivision sd) sync* {
+    // chunk index 0 = plain points, 1 = "indexed" points (city refs).
+    for (final wantType in const [0, 1]) {
       final chunk = _chunkStart(sd, wantType: wantType);
       if (chunk == null) continue;
       var p = chunk.start;
       var guard = 0;
-      while (p + 9 <= chunk.end && guard++ < 20000) {
-        // Stop the chunk as soon as an object doesn't look valid for this
-        // subdivision — keeps us from spilling into adjacent data.
-        final decoded = _decodeLine(p, sd, kind);
+      while (p + 8 <= chunk.end && guard++ < 20000) {
+        final decoded = _decodePoint(p, sd);
         if (decoded == null) break;
         yield decoded.feature;
         p = decoded.next;
       }
     }
   }
+
+  /// The geographic box a subdivision covers (center ± half width/height).
+  BoundingBox _subBounds(Subdivision sd) {
+    final shift = 24 - sd.bitsPerCoord;
+    final hw = sd.width << shift, hh = sd.height << shift;
+    return BoundingBox(
+      garminUnitsToDegrees(sd.centerLat - hh),
+      garminUnitsToDegrees(sd.centerLon - hw),
+      garminUnitsToDegrees(sd.centerLat + hh),
+      garminUnitsToDegrees(sd.centerLon + hw),
+    );
+  }
+
+  static bool _overlaps(BoundingBox a, BoundingBox b) =>
+      a.west <= b.east && a.east >= b.west && a.south <= b.north && a.north >= b.south;
 
   /// Locates the RGN chunk of [wantType] (0=points,1=indexed,2=polylines,
   /// 3=polygons) for [sd], returning its [start] and a conservative [end].
