@@ -17,13 +17,13 @@ polyline first-points all decode correctly and in-bounds.
 Implemented:
 - IMG container + GMP sub-map location
 - TRE: bounding box, map levels (bits-per-coord), subdivisions
-- RGN: **full polyline geometry (all vertices)** via the bit-packed bitstream —
-  topo contour lines (types 0x20–0x25) come through
-- `example/img2geojson.dart` — dump polylines to GeoJSON (viewable in geojson.io)
+- RGN: **points/POIs, polylines and polygons — full geometry (all vertices)** via
+  the bit-packed bitstream (topo contour lines, types 0x20–0x25, come through)
+- LBL: **labels** — POI/feature names and **contour elevations** (8-bit & 6-bit)
+- `example/img2geojson.dart` — dump features to GeoJSON (view in geojson.io)
 
 Next:
-- Polygons + points/POIs (same bitstream); extended types (0x10000+)
-- LBL labels & contour elevations ✅
+- Extended types (0x10000+); non-Latin label codepages (Cyrillic)
 - FAT-based subfile enumeration; streaming reads for large files (mobile)
 
 ## Usage
