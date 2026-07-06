@@ -23,7 +23,7 @@ Implemented:
 
 Next:
 - Polygons + points/POIs (same bitstream); extended types (0x10000+)
-- LBL labels & contour elevations
+- LBL labels & contour elevations ✅
 - FAT-based subfile enumeration; streaming reads for large files (mobile)
 
 ## Usage

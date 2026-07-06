@@ -109,7 +109,11 @@ class GarminImg {
     }
 
     final rgnData0 = gmp + _u32(rgn + 0x15); // start of first subdivision data
-    return ImgMap._(this, bounds, levels, subs, rgnData0, lbl);
+    _expect(lbl + 2, 'GARMIN LBL');
+    final lbl1 = gmp + _u32(lbl + 0x15); // label data (LBL1) start
+    final lblMultiplier = _b[lbl + 0x1D]; // offset shift
+    final lblCoding = _b[lbl + 0x1E]; // 6=6-bit, 9=8-bit, 10/11=multibyte
+    return ImgMap._(this, bounds, levels, subs, rgnData0, lbl1, lblMultiplier, lblCoding);
   }
 
   // ---- helpers ----
@@ -148,11 +152,48 @@ class ImgMap {
   final List<MapLevel> levels;
   final List<Subdivision> subdivisions;
   final int _rgnData0;
-  // ignore: unused_field
-  final int _lbl;
+  final int _lbl1;
+  final int _lblMultiplier;
+  final int _lblCoding;
 
   ImgMap._(this._img, this.bounds, this.levels, this.subdivisions,
-      this._rgnData0, this._lbl);
+      this._rgnData0, this._lbl1, this._lblMultiplier, this._lblCoding);
+
+  /// Decodes the label at [rawOffset] (the low 22 bits are the offset into the
+  /// LBL1 label block; high bits are flags). Returns null for offset 0 (no
+  /// label). Supports 8-bit (coding 9) and 6-bit (coding 6) encodings.
+  String? _label(int rawOffset) {
+    final off = rawOffset & 0x3fffff;
+    if (off == 0) return null;
+    final addr = _lbl1 + (off << _lblMultiplier);
+    if (addr >= _img._b.length) return null;
+    if (_lblCoding == 6) return _decode6bit(addr);
+    // coding 9 (8-bit) / 10-11 (multibyte, best-effort Latin-1): bytes to 0x00.
+    final sb = StringBuffer();
+    var a = addr;
+    while (a < _img._b.length && _img._b[a] != 0 && sb.length < 200) {
+      sb.writeCharCode(_img._b[a]);
+      a++;
+    }
+    return sb.isEmpty ? null : sb.toString();
+  }
+
+  static const _c6 = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ     0123456789      ';
+  String? _decode6bit(int addr) {
+    final sb = StringBuffer();
+    var bitbuf = 0, nbits = 0, a = addr;
+    while (a < _img._b.length && sb.length < 200) {
+      while (nbits < 6) {
+        bitbuf = (bitbuf << 8) | _img._b[a++];
+        nbits += 8;
+      }
+      nbits -= 6;
+      final v = (bitbuf >> nbits) & 0x3f;
+      if (v == 0) break; // end of string
+      sb.write(v < _c6.length ? _c6[v] : '?');
+    }
+    return sb.isEmpty ? null : sb.toString();
+  }
 
   /// Sorted unique RGN offsets — used to bound a subdivision's data (its data
   /// ends where the next subdivision's begins).
@@ -265,7 +306,10 @@ class ImgMap {
     final type = ((typeByte & 0x7f) << 8) | subtype;
     return (
       feature: ImgFeature(
-          kind: FeatureKind.point, type: type, points: [LatLng(lat, lon)]),
+          kind: FeatureKind.point,
+          type: type,
+          points: [LatLng(lat, lon)],
+          label: _label(_img._u24(p + 1))),
       next: p + (hasSubtype ? 9 : 8),
     );
   }
@@ -324,7 +368,8 @@ class ImgMap {
       pts.add(LatLng(garminUnitsToDegrees(y), garminUnitsToDegrees(x)));
     }
 
-    final feature = ImgFeature(kind: kind, type: type & 0x3f, points: pts);
+    final feature = ImgFeature(
+        kind: kind, type: type & 0x3f, points: pts, label: _label(_img._u24(p + 1)));
     return (feature: feature, next: bs + blen);
   }
 

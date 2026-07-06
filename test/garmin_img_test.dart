@@ -111,6 +111,27 @@ void main() {
       }
       expect(bad, lessThan((pts.length * 0.03).ceil()), reason: '$bad bad');
     });
+
+    test('labels decode: POI names + contour elevations', () async {
+      final img = await GarminImg.open(sample!);
+      final map = img.maps.first;
+
+      // Some POIs carry human-readable names.
+      final named = map.points().where((f) => f.label != null).take(50).toList();
+      expect(named, isNotEmpty, reason: 'expected some labelled POIs');
+      expect(named.map((f) => f.label!).any((s) => RegExp(r'[A-Za-z]{3,}').hasMatch(s)),
+          isTrue, reason: 'expected at least one alphabetic POI name');
+
+      // Contour polylines (type 0x22) carry a numeric elevation label.
+      final elevs = map
+          .polylines()
+          .where((f) => f.type == 0x22 && f.label != null)
+          .take(50)
+          .toList();
+      expect(elevs, isNotEmpty, reason: 'expected labelled contour lines');
+      expect(elevs.map((f) => f.label!).any((s) => RegExp(r'^\d+$').hasMatch(s.trim())),
+          isTrue, reason: 'expected a numeric contour elevation');
+    });
   }, skip: sample == null ? 'no sample .img (set GARMIN_IMG_SAMPLE)' : false);
 
   test('rejects a locked (non-zero XOR) image', () {

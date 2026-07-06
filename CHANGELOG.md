@@ -15,3 +15,8 @@
 - Polygons (area fills) + points/POIs decoding (same RGN bitstream / point
   layout). example/img2geojson.dart now emits Point/LineString/Polygon. Tests
   cover all three feature kinds against the real sample.
+
+## 0.0.4
+
+- LBL labels: POI/feature names and contour elevation labels. Supports 8-bit
+  (coding 9) and 6-bit (coding 6) label encodings. Features now carry `label`.
