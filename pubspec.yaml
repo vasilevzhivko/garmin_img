@@ -1,0 +1,17 @@
+name: garmin_img
+description: >-
+  A pure-Dart reader for unlocked Garmin .img map files (topographic and vector
+  maps). Decodes the IMG container, GMP sub-maps, TRE (map levels, subdivisions,
+  bounds) and RGN geometry (points, polylines, polygons) into typed features.
+  Engine-agnostic — use it with mapsforge, flutter_map, a CLI, or a server.
+version: 0.0.1
+repository: https://github.com/vasilevzhivko/garmin_img
+environment:
+  sdk: ^3.1.3
+
+dependencies:
+  meta: ^1.9.0
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.24.0
