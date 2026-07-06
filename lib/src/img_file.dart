@@ -176,25 +176,51 @@ class ImgMap {
         : _img._b.length;
   }
 
-  /// Decodes every polyline (all points) across all subdivisions. Contour lines
-  /// (types 0x20–0x25 on topo maps) come through here. Labels/elevations and
-  /// extended types (0x10000+) are not resolved yet.
-  Iterable<ImgFeature> polylines() sync* {
+  /// Every polyline (all vertices) across all subdivisions. Contour lines
+  /// (types 0x20–0x25 on topo maps) come through here.
+  Iterable<ImgFeature> polylines() => _lines(2, FeatureKind.polyline);
+
+  /// Every polygon (area fills: water, forest, land) — same bitstream encoding
+  /// as polylines.
+  Iterable<ImgFeature> polygons() => _lines(3, FeatureKind.polygon);
+
+  /// Every point / POI (peaks, springs, etc.) — single-coordinate features.
+  Iterable<ImgFeature> points() sync* {
     for (final sd in subdivisions) {
-      if (!sd.hasPolylines) continue;
-      final chunk = _chunkStart(sd, wantType: 2); // 2 = polylines
+      // chunk index 0 = plain points, 1 = "indexed" points (city refs); both
+      // share the point object layout.
+      for (final wantType in const [0, 1]) {
+        final chunk = _chunkStart(sd, wantType: wantType);
+        if (chunk == null) continue;
+        var p = chunk.start;
+        var guard = 0;
+        while (p + 8 <= chunk.end && guard++ < 20000) {
+          final decoded = _decodePoint(p, sd);
+          if (decoded == null) break;
+          yield decoded.feature;
+          p = decoded.next;
+        }
+      }
+    }
+  }
+
+  /// All decoded features (points, polylines, polygons).
+  Iterable<ImgFeature> features() sync* {
+    yield* points();
+    yield* polylines();
+    yield* polygons();
+  }
+
+  Iterable<ImgFeature> _lines(int wantType, FeatureKind kind) sync* {
+    for (final sd in subdivisions) {
+      final chunk = _chunkStart(sd, wantType: wantType);
       if (chunk == null) continue;
-      // A subdivision's polyline chunk is a run of polyline objects. We decode
-      // sequentially; the chunk ends at the next chunk / subdivision (bounded
-      // here by the object's own length fields).
       var p = chunk.start;
-      final end = chunk.end;
       var guard = 0;
-      while (p + 9 <= end && guard++ < 20000) {
-        final decoded = _decodePolyline(p, sd);
-        // Stop the chunk as soon as an object doesn't look like a valid polyline
-        // belonging to this subdivision — a robust terminator that keeps us from
-        // spilling past the real polylines into adjacent data.
+      while (p + 9 <= chunk.end && guard++ < 20000) {
+        // Stop the chunk as soon as an object doesn't look valid for this
+        // subdivision — keeps us from spilling into adjacent data.
+        final decoded = _decodeLine(p, sd, kind);
         if (decoded == null) break;
         yield decoded.feature;
         p = decoded.next;
@@ -221,7 +247,30 @@ class ImgMap {
     return (start: start, end: end);
   }
 
-  ({ImgFeature feature, int next})? _decodePolyline(int p, Subdivision sd) {
+  /// Decodes a point/POI object: type(1), label(3), lon(2), lat(2), and — when
+  /// the type's high bit is set — a trailing subtype byte.
+  ({ImgFeature feature, int next})? _decodePoint(int p, Subdivision sd) {
+    if (p + 8 > _img._b.length) return null;
+    final typeByte = _img._b[p];
+    final hasSubtype = (typeByte & 0x80) != 0;
+    final dLon = _img._d.getInt16(p + 4, Endian.little);
+    final dLat = _img._d.getInt16(p + 6, Endian.little);
+    final limitLon = (sd.width == 0 ? 0x2000 : sd.width) * 6 + 64;
+    final limitLat = (sd.height == 0 ? 0x2000 : sd.height) * 6 + 64;
+    if (dLon.abs() > limitLon || dLat.abs() > limitLat) return null;
+    final shift = 24 - sd.bitsPerCoord;
+    final lon = garminUnitsToDegrees(sd.centerLon + (dLon << shift));
+    final lat = garminUnitsToDegrees(sd.centerLat + (dLat << shift));
+    final subtype = hasSubtype ? _img._b[p + 8] : 0;
+    final type = ((typeByte & 0x7f) << 8) | subtype;
+    return (
+      feature: ImgFeature(
+          kind: FeatureKind.point, type: type, points: [LatLng(lat, lon)]),
+      next: p + (hasSubtype ? 9 : 8),
+    );
+  }
+
+  ({ImgFeature feature, int next})? _decodeLine(int p, Subdivision sd, FeatureKind kind) {
     if (p + 9 > _img._b.length) return null;
     final type = _img._b[p];
     final twoByteLen = (type & 0x80) != 0;
@@ -275,7 +324,7 @@ class ImgMap {
       pts.add(LatLng(garminUnitsToDegrees(y), garminUnitsToDegrees(x)));
     }
 
-    final feature = ImgFeature(kind: FeatureKind.polyline, type: type & 0x3f, points: pts);
+    final feature = ImgFeature(kind: kind, type: type & 0x3f, points: pts);
     return (feature: feature, next: bs + blen);
   }
 

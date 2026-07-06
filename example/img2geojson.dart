@@ -17,23 +17,35 @@ Future<void> main(List<String> args) async {
 
   final img = await GarminImg.open(args[0]);
   final features = <Map<String, dynamic>>[];
+  outer:
   for (final map in img.maps) {
-    for (final f in map.polylines()) {
-      if (f.points.length < 2) continue;
+    for (final f in map.features()) {
+      final coords = [
+        for (final p in f.points) [p.lng, p.lat] // GeoJSON is [lng, lat]
+      ];
+      final Map<String, dynamic> geometry;
+      switch (f.kind) {
+        case FeatureKind.point:
+          geometry = {'type': 'Point', 'coordinates': coords.first};
+        case FeatureKind.polyline:
+          if (f.points.length < 2) continue;
+          geometry = {'type': 'LineString', 'coordinates': coords};
+        case FeatureKind.polygon:
+          if (f.points.length < 3) continue;
+          // Close the ring for a valid GeoJSON Polygon.
+          final ring = [...coords, coords.first];
+          geometry = {'type': 'Polygon', 'coordinates': [ring]};
+      }
       features.add({
         'type': 'Feature',
-        'properties': {'garminType': '0x${f.type.toRadixString(16)}'},
-        'geometry': {
-          'type': 'LineString',
-          // GeoJSON is [lng, lat].
-          'coordinates': [
-            for (final p in f.points) [p.lng, p.lat]
-          ],
+        'properties': {
+          'kind': f.kind.name,
+          'garminType': '0x${f.type.toRadixString(16)}',
         },
+        'geometry': geometry,
       });
-      if (features.length >= max) break;
+      if (features.length >= max) break outer;
     }
-    if (features.length >= max) break;
   }
 
   stdout.writeln(jsonEncode({'type': 'FeatureCollection', 'features': features}));

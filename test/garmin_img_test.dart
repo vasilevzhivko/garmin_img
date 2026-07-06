@@ -71,6 +71,46 @@ void main() {
       expect(bad, lessThan((lines.length * 0.03).ceil()),
           reason: '$bad/${lines.length} polylines out-of-bounds or incoherent');
     });
+
+    test('polygons decode as multi-point areas, in-bounds', () async {
+      final img = await GarminImg.open(sample!);
+      final map = img.maps.first;
+      final b = map.bounds;
+      final polys = map.polygons().take(500).toList();
+      expect(polys, isNotEmpty);
+      var multi = 0, bad = 0;
+      for (final f in polys) {
+        if (f.points.length >= 3) multi++;
+        final inB = f.points.every((p) =>
+            p.lat >= b.south - 0.05 &&
+            p.lat <= b.north + 0.05 &&
+            p.lng >= b.west - 0.05 &&
+            p.lng <= b.east + 0.05);
+        if (!inB) bad++;
+      }
+      expect(multi, greaterThan(polys.length ~/ 2));
+      expect(bad, lessThan((polys.length * 0.04).ceil()), reason: '$bad bad');
+    });
+
+    test('points/POIs decode as single in-bounds coordinates', () async {
+      final img = await GarminImg.open(sample!);
+      final map = img.maps.first;
+      final b = map.bounds;
+      final pts = map.points().take(500).toList();
+      expect(pts, isNotEmpty);
+      var bad = 0;
+      for (final f in pts) {
+        expect(f.points.length, 1);
+        final p = f.points.first;
+        if (p.lat < b.south - 0.05 ||
+            p.lat > b.north + 0.05 ||
+            p.lng < b.west - 0.05 ||
+            p.lng > b.east + 0.05) {
+          bad++;
+        }
+      }
+      expect(bad, lessThan((pts.length * 0.03).ceil()), reason: '$bad bad');
+    });
   }, skip: sample == null ? 'no sample .img (set GARMIN_IMG_SAMPLE)' : false);
 
   test('rejects a locked (non-zero XOR) image', () {
