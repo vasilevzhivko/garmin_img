@@ -413,32 +413,34 @@ class ImgMap {
     // Read the whole (small) bitstream once — one file read for the file source.
     final stream = _img._src.range(bs, total);
     final info = stream[0];
-    final lonBase = _baseBits(info & 0x0f);
-    final latBase = _baseBits((info >> 4) & 0x0f);
     final br = BitReader(stream, 1, blen);
 
-    var lonVar = false, latVar = false, lonSign = 1, latSign = 1;
-    if (br.get(1) != 0) {
-      lonSign = br.get(1) != 0 ? -1 : 1;
-    } else {
-      lonVar = true;
-    }
-    if (br.get(1) != 0) {
-      latSign = br.get(1) != 0 ? -1 : 1;
-    } else {
-      latVar = true;
-    }
-    final lonBits = 2 + lonBase + (lonVar ? 1 : 0);
-    final latBits = 2 + latBase + (latVar ? 1 : 0);
-    final shift = 24 - sd.bitsPerCoord;
+    // Sign header: a leading 1-bit means "constant sign" (next bit gives it),
+    // 0 means each delta carries its own sign (variable). Longitude first.
+    int lonSign = 0, latSign = 0;
+    if (br.get(1) != 0) lonSign = br.get(1) == 0 ? 1 : -1;
+    if (br.get(1) != 0) latSign = br.get(1) == 0 ? 1 : -1;
 
-    var x = sd.centerLon + (dLon << shift);
-    var y = sd.centerLat + (dLat << shift);
-    final pts = <LatLng>[LatLng(garminUnitsToDegrees(y), garminUnitsToDegrees(x))];
+    // The label's "extra bit" (bit 22) adds one bit of precision to LONGITUDE.
+    final lonExtra = (_img._u24(p + 1) & 0x400000) != 0 ? 1 : 0;
+    const latExtra = 0;
+    final lonBits = _convertCoordLen(info & 0x0f, lonSign, lonExtra);
+    final latBits = _convertCoordLen(info >> 4, latSign, latExtra);
+    final bpc = sd.bitsPerCoord;
+
+    var curLon = dLon, curLat = dLat;
+    final pts = <LatLng>[
+      LatLng(garminUnitsToDegrees(_coord(sd.centerLat, curLat, bpc, 0)),
+          garminUnitsToDegrees(_coord(sd.centerLon, curLon, bpc, 0))),
+    ];
+    curLon <<= lonExtra;
+    curLat <<= latExtra;
     while (br.remaining >= lonBits + latBits) {
-      x += _signed(br, lonBits, lonVar, lonSign) << shift;
-      y += _signed(br, latBits, latVar, latSign) << shift;
-      pts.add(LatLng(garminUnitsToDegrees(y), garminUnitsToDegrees(x)));
+      curLon += _readCoordOffset(br, lonBits, lonSign, lonExtra);
+      curLat += _readCoordOffset(br, latBits, latSign, latExtra);
+      pts.add(LatLng(
+          garminUnitsToDegrees(_coord(sd.centerLat, curLat, bpc, latExtra)),
+          garminUnitsToDegrees(_coord(sd.centerLon, curLon, bpc, lonExtra))));
     }
 
     final feature = ImgFeature(
@@ -446,13 +448,47 @@ class ImgMap {
     return (feature: feature, next: bs + total);
   }
 
-  static int _baseBits(int nibble) => nibble <= 9 ? nibble : 2 * nibble - 9;
+  /// Bits per coordinate delta. Base from the info nibble (i, or 2i-9 above 9),
+  /// +2, +1 when the sign is variable, +1 for the longitude "extra bit".
+  static int _convertCoordLen(int i, int sign, int extraBit) {
+    var add = 0;
+    if (sign == 0) add++;
+    add += extraBit;
+    return (i <= 9 ? i : 2 * i - 9) + 2 + add;
+  }
 
-  static int _signed(BitReader br, int bits, bool variable, int sign) {
-    final v = br.get(bits);
-    if (variable) {
-      return (v & (1 << (bits - 1))) != 0 ? v - (1 << bits) : v;
+  /// garmin unit = center + (value << (24 - bpc - extra))  (>> if negative shift).
+  static int _coord(int center, int value, int bpc, int extra) {
+    final shift = 24 - bpc - extra;
+    return center + (shift >= 0 ? value << shift : value >> -shift);
+  }
+
+  /// Decodes one signed coordinate delta from the bitstream. Ported faithfully
+  /// from org.free.garminimg's `BitStreamReader.readCoordOffset`, including the
+  /// variable-length "escape" case (sign-bit complement == 0 → read another
+  /// group and combine) that a naive two's-complement read gets wrong — that
+  /// omission produced occasional wild vertices (spikes/shards in polygons).
+  static int _readCoordOffset(BitReader br, int nbBits, int sign, int extraBit) {
+    if (sign == 0) {
+      final value = br.get(nbBits);
+      final signMask = 1 << (nbBits - 1);
+      if ((value & signMask) != 0) {
+        final comp = value ^ signMask;
+        if (extraBit == 0) {
+          if (comp != 0) return comp - signMask;
+          final other = _readCoordOffset(br, nbBits, sign, extraBit);
+          return other < 0 ? 1 - value + other : value - 1 + other;
+        } else {
+          if ((comp & 0xFFFFFE) != 0) return (comp & 0xFFFFFE) - signMask;
+          final other = _readCoordOffset(br, nbBits - 1, sign, 0);
+          return other < 0
+              ? 1 - signMask + 1 + (other << 1)
+              : signMask - 1 - 1 + (other << 1);
+        }
+      }
+      return extraBit > 0 ? value & 0xFFFFFE : value;
     }
-    return v * sign;
+    final val = br.get(nbBits);
+    return extraBit > 0 ? ((val >> 1) * sign) << 1 : val * sign;
   }
 }

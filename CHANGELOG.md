@@ -1,3 +1,11 @@
+## 0.0.9
+
+- Port the coordinate bitstream decoder faithfully from org.free.garminimg:
+  add the variable-length "escape" case in readCoordOffset (sign-bit complement
+  == 0 → read another group and combine) and the longitude "extra bit"
+  precision. The naive decoder emitted a fixed large jump on escape, producing
+  occasional wild vertices (spikes / triangular shards in polygons).
+
 ## 0.0.8
 
 - Add `GarminImg.polygonColors`: authentic per-type polygon fill colors parsed
