@@ -55,6 +55,10 @@ class GarminImg {
   /// filled). Consumers typically lighten these for a calmer look.
   late final Map<int, int> polygonColors = _parseTypPolygons();
 
+  /// Polygon type → its TYP name (e.g. "FOREST", "MIXED FOREST", "ROCKS"), when
+  /// present. Lets consumers pick semantics (forest vs grass) the color can't.
+  late final Map<int, String> polygonNames = _parseTypPolygonNames();
+
   /// Parses the polygon section of the (single) `GARMIN TYP` subfile. Layout
   /// (validated against Locus' `TypFileHandler` header + empirically):
   ///   +0x15 u16 codepage
@@ -88,6 +92,50 @@ class GarminImg {
         final bl = _src.u8(e + 1), gr = _src.u8(e + 2), rd = _src.u8(e + 3);
         if (rd == 0 && gr == 0 && bl == 0) continue; // background — don't fill
         out[type] = 0xFF000000 | (rd << 16) | (gr << 8) | bl;
+      }
+      return out;
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// Same TYP polygon index as [_parseTypPolygons], but reads each entry's label
+  /// (the first printable ASCII run in the entry) as the type's name.
+  Map<int, String> _parseTypPolygonNames() {
+    try {
+      final at = _src.indexOf(_ascii('GARMIN TYP'), 0);
+      if (at < 2) return const {};
+      final typ = at - 2;
+      final dataOff = typ + _u32(typ + 0x27);
+      final idxOff = typ + _u32(typ + 0x47);
+      final rec = _src.u8(typ + 0x4b);
+      final idxLen = _u32(typ + 0x4d);
+      if (rec < 3 || idxLen <= 0 || idxLen > 1 << 20) return const {};
+      final out = <int, String>{};
+      final n = idxLen ~/ rec;
+      for (var k = 0; k < n; k++) {
+        final r = idxOff + k * rec;
+        final type = _u16(r) >> 5;
+        var off = 0;
+        for (var b = 0; b < rec - 2; b++) {
+          off |= _src.u8(r + 2 + b) << (8 * b);
+        }
+        final e = dataOff + off;
+        // Scan up to 48 bytes for the first null-terminated printable run.
+        for (var p = e; p < e + 48 && p < _src.length; p++) {
+          final c = _src.u8(p);
+          if (c >= 0x20 && c < 0x7f) {
+            final start = p;
+            while (p < _src.length && _src.u8(p) >= 0x20 && _src.u8(p) < 0x7f) {
+              p++;
+            }
+            if (p - start >= 3 && p < _src.length && _src.u8(p) == 0) {
+              final b = <int>[for (var q = start; q < p; q++) _src.u8(q)];
+              out[type] = String.fromCharCodes(b);
+            }
+            break;
+          }
+        }
       }
       return out;
     } catch (_) {

@@ -1,3 +1,8 @@
+## 0.0.11
+
+- Add `GarminImg.polygonNames` (type → TYP name, e.g. "FOREST", "ROCKS") so
+  consumers can pick semantics the color alone can't (forest vs grass).
+
 ## 0.0.10
 
 - Decode LBL labels per the map's codepage (u16 @ LBL+0xaa): Windows-1251 →
