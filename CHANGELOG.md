@@ -1,3 +1,9 @@
+## 0.0.10
+
+- Decode LBL labels per the map's codepage (u16 @ LBL+0xaa): Windows-1251 →
+  Cyrillic, 65001 → UTF-8, else Latin (cp1252). Latin and Cyrillic editions of a
+  map differ only in this field, so both now read correctly.
+
 ## 0.0.9
 
 - Port the coordinate bitstream decoder faithfully from org.free.garminimg:

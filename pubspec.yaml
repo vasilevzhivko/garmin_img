@@ -4,7 +4,7 @@ description: >-
   maps). Decodes the IMG container, GMP sub-maps, TRE (map levels, subdivisions,
   bounds) and RGN geometry (points, polylines, polygons) into typed features.
   Engine-agnostic — use it with mapsforge, flutter_map, a CLI, or a server.
-version: 0.0.9
+version: 0.0.10
 repository: https://github.com/vasilevzhivko/garmin_img
 environment:
   sdk: ^3.1.3
