@@ -215,8 +215,12 @@ class GarminImg {
     // 65001=UTF-8. Latin & Cyrillic editions of the same map differ only here.
     final lblHeaderLen = _u16(lbl);
     final lblCodepage = lblHeaderLen > 0xac ? _u16(lbl + 0xaa) : 0;
+    // POI section (LBL header): POI labels are an indirection — a point's label
+    // offset indexes here, and this holds the real LBL1 offset of the name.
+    final poi0 = gmp + _u32(lbl + 0x57);
+    final poiMul = 1 << _src.u8(lbl + 0x5F);
     return ImgMap._(this, bounds, levels, subs, rgnData0, lbl1, lblMultiplier,
-        lblCoding, lblCodepage);
+        lblCoding, lblCodepage, poi0, poiMul);
   }
 
   // ---- helpers ----
@@ -246,15 +250,21 @@ class ImgMap {
   /// LBL charset (1251 Cyrillic / 1252/0/850 Latin / 65001 UTF-8).
   final int _lblCodepage;
 
+  /// POI label section start + per-record multiplier (for POI-label indirection).
+  final int _poi0;
+  final int _poiMul;
+
   ImgMap._(this._img, this.bounds, this.levels, this.subdivisions,
       this._rgnData0, this._lbl1, this._lblMultiplier, this._lblCoding,
-      this._lblCodepage);
+      this._lblCodepage, this._poi0, this._poiMul);
 
-  /// Decodes the label at [rawOffset] (the low 22 bits are the offset into the
-  /// LBL1 label block; high bits are flags). Returns null for offset 0 (no
-  /// label). Supports 8-bit (coding 9, charset per codepage) and 6-bit (coding 6).
-  String? _label(int rawOffset) {
-    final off = rawOffset & 0x3fffff;
+  /// Decodes the label from a raw RGN label field (low 22 bits = LBL1 offset,
+  /// high bits are flags). Used by line/polygon objects.
+  String? _label(int rawOffset) => _labelAt(rawOffset & 0x3fffff);
+
+  /// Decodes the label at a clean LBL1 [off] (already masked). Returns null for
+  /// offset 0. 8-bit (coding 9, per codepage) and 6-bit (coding 6).
+  String? _labelAt(int off) {
     if (off == 0) return null;
     final addr = _lbl1 + (off << _lblMultiplier);
     if (addr >= _img._src.length) return null;
@@ -454,7 +464,12 @@ class ImgMap {
   ({ImgFeature feature, int next})? _decodePoint(int p, Subdivision sd) {
     if (p + 8 > _img._src.length) return null;
     final typeByte = _img._src.u8(p);
-    final hasSubtype = (typeByte & 0x80) != 0;
+    // 3-byte label info: bit23 = has-subtype, bit22 = POI (indirect label),
+    // bits0-21 = label offset. (Subtype flag is here, NOT in the type byte.)
+    final info = _img._u24(p + 1);
+    final hasSubtype = (info & 0x800000) != 0;
+    final isPoi = (info & 0x400000) != 0;
+    final lblOffset = info & 0x3fffff;
     final dLon = _img._src.s16(p + 4);
     final dLat = _img._src.s16(p + 6);
     final limitLon = (sd.width == 0 ? 0x2000 : sd.width) * 6 + 64;
@@ -464,15 +479,24 @@ class ImgMap {
     final lon = garminUnitsToDegrees(sd.centerLon + (dLon << shift));
     final lat = garminUnitsToDegrees(sd.centerLat + (dLat << shift));
     final subtype = hasSubtype ? _img._src.u8(p + 8) : 0;
-    final type = ((typeByte & 0x7f) << 8) | subtype;
+    final type = (typeByte << 8) | subtype; // full "fulltipo" (e.g. 0x6616 peak)
     return (
       feature: ImgFeature(
           kind: FeatureKind.point,
           type: type,
           points: [LatLng(lat, lon)],
-          label: _label(_img._u24(p + 1))),
+          label: isPoi ? _poiName(lblOffset) : _labelAt(lblOffset)),
       next: p + (hasSubtype ? 9 : 8),
     );
+  }
+
+  /// Resolves a POI label: the point's [offset] indexes the POI section, whose
+  /// record holds the real LBL1 offset of the name.
+  String? _poiName(int offset) {
+    if (offset == 0) return null;
+    final addr = _poi0 + offset * _poiMul;
+    if (addr + 3 > _img._src.length) return null;
+    return _labelAt(_img._u24(addr) & 0x3fffff);
   }
 
   ({ImgFeature feature, int next})? _decodeLine(int p, Subdivision sd, FeatureKind kind) {

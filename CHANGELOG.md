@@ -1,3 +1,11 @@
+## 0.0.12
+
+- Fix point/POI decoding. The has-subtype and POI flags live in the 3-byte label
+  info (bits 23/22), not the type byte; the full type byte is the "fulltipo"
+  high byte (so summits are 0x6616 / 0x6300). POI labels are an indirection
+  (offset → POI section → real LBL1 offset) — decode them properly instead of
+  reading raw bytes, which fixes truncated/garbled POI names.
+
 ## 0.0.11
 
 - Add `GarminImg.polygonNames` (type → TYP name, e.g. "FOREST", "ROCKS") so
