@@ -14,7 +14,9 @@ String _clean(String s) =>
 
 final _split = RegExp(r'^(.*?)(\d+)?\s*$');
 
-/// key -> {name, ele} for every summit point, keyed by exact coordinate.
+/// One representative summit point per peak, using the FINEST map level's
+/// coordinate (coarser levels round the position to a wider grid). Keyed by name
+/// + ~250 m cell. Returns {name -> {name, lat, lng, ele}}.
 Future<Map<String, Map<String, dynamic>>> _peaks(String path) async {
   final img = await GarminImg.open(path);
   final full = img.maps.fold<List<double>>([90, 180, -90, -180], (a, m) {
@@ -25,17 +27,24 @@ Future<Map<String, Map<String, dynamic>>> _peaks(String path) async {
   final q = BoundingBox(full[0], full[1], full[2], full[3]);
   final out = <String, Map<String, dynamic>>{};
   for (final m in img.maps) {
-    for (final f in m.featuresInBounds(q)) {
-      if (f.kind != FeatureKind.point) continue;
-      if (f.type != 0x6616 && f.type != 0x6300) continue;
-      final p = f.points.first;
-      final mm = _split.firstMatch(_clean(f.label ?? ''))!;
-      final name = _clean(mm.group(1) ?? '');
-      final feet = mm.group(2);
-      final ele = feet != null ? (int.parse(feet) * 0.3048).round() : null;
-      if (ele != null && ele > 3000) continue;
-      final key = '${p.lat.toStringAsFixed(6)},${p.lng.toStringAsFixed(6)}';
-      out[key] = {'name': name, 'lat': p.lat, 'lng': p.lng, if (ele != null) 'ele': ele};
+    // Process each map's levels FINEST first, so the first instance we keep for
+    // a peak carries the most precise coordinate.
+    final bpcs = m.levels.map((l) => l.bitsPerCoord).toSet().toList()
+      ..sort((a, b) => b.compareTo(a));
+    for (final bpc in bpcs) {
+      for (final f in m.featuresInBounds(q, onlyBpc: {bpc})) {
+        if (f.kind != FeatureKind.point) continue;
+        if (f.type != 0x6616 && f.type != 0x6300) continue;
+        final p = f.points.first;
+        final mm = _split.firstMatch(_clean(f.label ?? ''))!;
+        final name = _clean(mm.group(1) ?? '');
+        final feet = mm.group(2);
+        final ele = feet != null ? (int.parse(feet) * 0.3048).round() : null;
+        if (ele != null && ele > 3000) continue;
+        final key = '$name@${(p.lat / 0.0025).round()},${(p.lng / 0.0025).round()}';
+        out.putIfAbsent(key,
+            () => {'name': name, 'lat': p.lat, 'lng': p.lng, if (ele != null) 'ele': ele});
+      }
     }
   }
   img.close();
@@ -50,23 +59,28 @@ Future<void> main(List<String> args) async {
   final cyr = await _peaks(cyrPath);
   final lat = await _peaks(latPath);
 
-  final seen = <String>{};
+  // Both editions share identical finest-level geometry, so join by exact coord.
+  String coordKey(Map<String, dynamic> p) =>
+      '${(p['lat'] as double).toStringAsFixed(6)},${(p['lng'] as double).toStringAsFixed(6)}';
+  final latByCoord = {for (final p in lat.values) coordKey(p): p['name'] as String};
+
   final peaks = <Map<String, dynamic>>[];
-  for (final e in cyr.entries) {
-    final bg = e.value['name'] as String;
+  final seen = <String>{};
+  for (final p in cyr.values) {
+    final bg = p['name'] as String;
     if (bg.isEmpty) continue; // named only
-    final en = lat[e.key]?['name'] as String?; // same coord in Latin edition
-    final ele = e.value['ele'] ?? lat[e.key]?['ele'];
-    final p = e.value;
-    // Dedup by name + ~2 km cell (peaks repeat across levels/sub-maps).
-    final key = '$bg@${(p['lat'] / 0.02).round()},${(p['lng'] / 0.02).round()}';
-    if (!seen.add(key)) continue;
+    // One row per peak: dedup by name + ~2 km cell (keeps the finest coord since
+    // levels were processed finest-first).
+    if (!seen.add('$bg@${(p['lat'] / 0.02).round()},${(p['lng'] / 0.02).round()}')) {
+      continue;
+    }
+    final en = latByCoord[coordKey(p)];
     peaks.add({
       'name_bg': bg,
       'name_en': (en != null && en.isNotEmpty) ? en : null,
       'lat': double.parse((p['lat'] as double).toStringAsFixed(6)),
       'lng': double.parse((p['lng'] as double).toStringAsFixed(6)),
-      'elevation': ele,
+      'elevation': p['ele'],
     });
   }
   peaks.sort((a, b) => ((b['elevation'] ?? 0) as int).compareTo((a['elevation'] ?? 0) as int));
